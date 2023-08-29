@@ -21,6 +21,7 @@ from collections import namedtuple
 from dataclasses import dataclass
 from pathlib import Path
 import argparse
+import locale
 import os
 import re
 import sys
@@ -28,17 +29,19 @@ import sys
 FENCES = ["```", "~~~"]
 MAX_HEADING_LEVEL = 6
 DIR_SUFFIX = "_split"
+DEFAULT_ENCODING = "utf-8"
 
 Chapter = namedtuple("Chapter", "parent_headings, heading, text")
 
 
 class Splitter(ABC):
-    def __init__(self, level, toc, force, verbose):
+    def __init__(self, level, toc, force, verbose, encoding):
         self.level = level
         self.toc = toc
         self.force = force
         self.verbose = verbose
         self.stats = Stats()
+        self.encoding = encoding
 
     @abstractmethod
     def process(self):
@@ -83,13 +86,13 @@ class Splitter(ABC):
                         else chapter.heading.heading_title
                     )
                     toc += f"\n{indent}- [{title}](<./{chapter_path.relative_to(out_path)}>)"
-            with open(chapter_path, mode="a") as file:
+            with open(chapter_path, mode="a", encoding=self.encoding) as file:
                 for line in chapter.text:
                     file.write(line)
 
         if self.toc:
             self.stats.new_out_files += 1
-            with open(out_path / "toc.md", mode="w") as file:
+            with open(out_path / "toc.md", mode="w", encoding=self.encoding) as file:
                 if self.verbose:
                     print(f"Write table of contents to {out_path / 'toc.md'}")
                 file.write(toc)
@@ -105,7 +108,8 @@ class StdinSplitter(Splitter):
     """Split content from stdin"""
 
     def __init__(self, level, toc, out_path, force, verbose):
-        super().__init__(level, toc, force, verbose)
+        encoding = locale.getpreferredencoding()
+        super().__init__(level, toc, force, verbose, encoding)
         self.out_path = Path(DIR_SUFFIX) if out_path is None else Path(out_path)
         if self.out_path.exists():
             if self.force:
@@ -125,8 +129,8 @@ class StdinSplitter(Splitter):
 class PathBasedSplitter(Splitter):
     """Split a specific file or all .md files found in a directory (recursively)"""
 
-    def __init__(self, in_path, level, toc, out_path, force, verbose):
-        super().__init__(level, toc, force, verbose)
+    def __init__(self, in_path, level, toc, out_path, force, verbose, encoding):
+        super().__init__(level, toc, force, verbose, encoding)
         self.in_path = Path(in_path)
         if not self.in_path.exists():
             raise MdSplitError(f"Input file/directory '{self.in_path}' does not exist. Exiting..")
@@ -162,7 +166,7 @@ class PathBasedSplitter(Splitter):
     def process_file(self, in_file_path, out_path):
         if self.verbose:
             print(f"Process file '{in_file_path}' to '{out_path}'")
-        with open(in_file_path) as stream:
+        with open(in_file_path, encoding=self.encoding) as stream:
             self.process_stream(stream, in_file_path.name, out_path)
 
     def print_stats(self):
@@ -299,6 +303,15 @@ def main():
         help="maximum heading level to split, default: %(default)s",
         default=1,
     )
+
+    parser.add_argument(
+        "-e",
+        "--encoding",
+        type=str,
+        help="encoding used when reading/writing files, default: %(default)s",
+        default=DEFAULT_ENCODING,
+    )
+
     parser.add_argument(
         "-t",
         "--table-of-contents",
@@ -324,12 +337,14 @@ def main():
             "out_path": args.output,
             "force": args.force,
             "verbose": args.verbose,
+            "encoding": args.encoding
         }
-        splitter = (
-            StdinSplitter(**splitter_args)
-            if args.input == "-"
-            else PathBasedSplitter(args.input, **splitter_args)
-        )
+        splitter = None
+        if args.input == "-":
+            del splitter_args["encoding"]
+            splitter =  StdinSplitter(**splitter_args)
+        else:
+            splitter =  PathBasedSplitter(args.input, **splitter_args)
         splitter.process()
         splitter.print_stats()
     except MdSplitError as e:
